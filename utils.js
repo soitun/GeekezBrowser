@@ -1,4 +1,3 @@
-// utils.js (完整替换)
 const { Base64 } = require('js-base64');
 const { URL } = require('url');
 
@@ -26,7 +25,15 @@ function getProxyRemark(link) {
 }
 
 function parseProxyLink(link, tag) {
-    let outbound = { tag: tag };
+    let outbound = { 
+        tag: tag,
+        // 开启嗅探，这对双栈至关重要
+        sniffing: {
+            enabled: true,
+            destOverride: ["http", "tls", "quic"],
+            routeOnly: true 
+        }
+    };
     link = link.trim();
 
     try {
@@ -34,6 +41,7 @@ function parseProxyLink(link, tag) {
             const base64Str = link.replace('vmess://', '');
             const configStr = decodeBase64Content(base64Str);
             const vmess = JSON.parse(configStr);
+
             outbound.protocol = "vmess";
             outbound.settings = {
                 vnext: [{
@@ -41,18 +49,31 @@ function parseProxyLink(link, tag) {
                     users: [{ id: vmess.id, alterId: parseInt(vmess.aid || 0), security: vmess.scy || "auto" }]
                 }]
             };
+            
+            const net = vmess.net || "tcp";
             outbound.streamSettings = {
-                network: vmess.net || "tcp",
+                network: net,
                 security: vmess.tls || "none",
-                wsSettings: vmess.net === "ws" ? { path: vmess.path, headers: { Host: vmess.host } } : undefined,
-                tlsSettings: vmess.tls === 'tls' ? { serverName: vmess.sni || vmess.host, allowInsecure: true } : undefined,
-                grpcSettings: vmess.net === 'grpc' ? { serviceName: vmess.path } : undefined
+                wsSettings: net === "ws" ? { path: vmess.path, headers: { Host: vmess.host } } : undefined,
+                grpcSettings: net === "grpc" ? { serviceName: vmess.path || vmess.serviceName } : undefined,
+                httpSettings: net === "h2" ? { path: vmess.path, host: vmess.host ? vmess.host.split(',') : [] } : undefined,
+                kcpSettings: net === "kcp" ? { header: { type: vmess.type || "none" }, seed: vmess.path } : undefined
             };
+
+            if (vmess.tls === 'tls') {
+                outbound.streamSettings.tlsSettings = {
+                    serverName: vmess.sni || vmess.host,
+                    fingerprint: "chrome", // 伪装 Chrome TLS 指纹
+                    allowInsecure: true,
+                    alpn: vmess.alpn ? vmess.alpn.split(',') : undefined
+                };
+            }
         } 
         else if (link.startsWith('vless://')) {
             const urlObj = new URL(link);
             const params = urlObj.searchParams;
             const security = params.get("security") || "none";
+            let type = params.get("type") || "tcp";
 
             outbound.protocol = "vless";
             outbound.settings = {
@@ -62,32 +83,35 @@ function parseProxyLink(link, tag) {
                     users: [{
                         id: urlObj.username,
                         encryption: params.get("encryption") || "none",
-                        flow: params.get("flow") || "" // XTLS Vision 必须参数
+                        flow: params.get("flow") || "" 
                     }]
                 }]
             };
 
-            outbound.streamSettings = {
-                network: params.get("type") || "tcp",
-                security: security,
-                wsSettings: params.get("type") === 'ws' ? { path: params.get("path"), headers: { Host: params.get("host") } } : undefined,
-                grpcSettings: params.get("type") === 'grpc' ? { serviceName: params.get("serviceName") } : undefined
-            };
+            outbound.streamSettings = { network: type, security: security };
+
+            if (type === 'ws') {
+                outbound.streamSettings.wsSettings = { path: params.get("path"), headers: { Host: params.get("host") } };
+            } else if (type === 'grpc') {
+                outbound.streamSettings.grpcSettings = { serviceName: params.get("serviceName") };
+            } else if (type === 'xhttp' || type === 'splithttp') {
+                outbound.streamSettings.network = "xhttp";
+                outbound.streamSettings.xhttpSettings = { path: params.get("path") || "/", host: params.get("host") || "" };
+            }
 
             if (security === 'tls') {
                 outbound.streamSettings.tlsSettings = {
-                    serverName: params.get("sni") || urlObj.hostname,
+                    serverName: params.get("sni") || params.get("host") || urlObj.hostname,
+                    fingerprint: "chrome",
                     allowInsecure: true,
                     alpn: params.get("alpn") ? params.get("alpn").split(',') : undefined
                 };
-            }
-            else if (security === 'reality') {
-                // Reality 核心配置
+            } else if (security === 'reality') {
                 outbound.streamSettings.realitySettings = {
                     show: false,
                     fingerprint: params.get("fp") || "chrome",
                     serverName: params.get("sni") || "",
-                    publicKey: params.get("pbk") || "", // 必须有
+                    publicKey: params.get("pbk") || "",
                     shortId: params.get("sid") || "",
                     spiderX: params.get("spx") || ""
                 };
@@ -96,13 +120,16 @@ function parseProxyLink(link, tag) {
         else if (link.startsWith('trojan://')) {
             const urlObj = new URL(link);
             const params = urlObj.searchParams;
+            const type = params.get("type") || "tcp";
+            
             outbound.protocol = "trojan";
             outbound.settings = { servers: [{ address: urlObj.hostname, port: parseInt(urlObj.port), password: urlObj.username }] };
             outbound.streamSettings = {
-                network: params.get("type") || "tcp", security: "tls",
-                tlsSettings: { serverName: params.get("sni") || urlObj.hostname, allowInsecure: true },
-                wsSettings: params.get("type") === 'ws' ? { path: params.get("path") } : undefined,
-                grpcSettings: params.get("type") === 'grpc' ? { serviceName: params.get("serviceName") } : undefined
+                network: type,
+                security: params.get("security") || "tls",
+                tlsSettings: { serverName: params.get("sni") || urlObj.hostname, fingerprint: "chrome", allowInsecure: true },
+                wsSettings: type === 'ws' ? { path: params.get("path"), headers: { Host: params.get("host") } } : undefined,
+                grpcSettings: type === 'grpc' ? { serviceName: params.get("serviceName") } : undefined
             };
         }
         else if (link.startsWith('ss://')) {
@@ -124,14 +151,14 @@ function parseProxyLink(link, tag) {
             }
             outbound.protocol = "shadowsocks";
             outbound.settings = { servers: [{ address: host, port: parseInt(port), method, password }] };
-        } else if (link.startsWith('socks5://') || link.startsWith('socks://')) {
-            const urlObj = new URL(link.replace('socks5://', 'http://').replace('socks://', 'http://'));
-            outbound.protocol = "socks";
-            outbound.settings = { servers: [{ address: urlObj.hostname, port: parseInt(urlObj.port), users: urlObj.username ? [{ user: urlObj.username, pass: urlObj.password }] : [] }] };
-        } else if (link.startsWith('http://') || link.startsWith('https://')) {
-            const urlObj = new URL(link);
-            outbound.protocol = "http";
-            outbound.settings = { servers: [{ address: urlObj.hostname, port: parseInt(urlObj.port), users: urlObj.username ? [{ user: urlObj.username, pass: urlObj.password }] : [] }] };
+        } else if (link.startsWith('socks')) {
+             const urlObj = new URL(link.replace(/^socks5?:\/\//, 'http://'));
+             outbound.protocol = "socks";
+             outbound.settings = { servers: [{ address: urlObj.hostname, port: parseInt(urlObj.port), users: urlObj.username ? [{ user: urlObj.username, pass: urlObj.password }] : [] }] };
+        } else if (link.startsWith('http')) {
+             const urlObj = new URL(link);
+             outbound.protocol = "http";
+             outbound.settings = { servers: [{ address: urlObj.hostname, port: parseInt(urlObj.port), users: urlObj.username ? [{ user: urlObj.username, pass: urlObj.password }] : [] }] };
         } else { throw new Error("Unsupported protocol"); }
     } catch (e) { console.error("Parse Proxy Error:", link, e); throw e; }
     return outbound;
@@ -156,10 +183,16 @@ function generateXrayConfig(mainProxyStr, localPort, preProxyConfig = null) {
     outbounds.push({ protocol: "freedom", tag: "direct" });
 
     return {
-        log: { loglevel: "warning" }, // 改为 warning 减少垃圾日志，但关键错误会显示
+        log: { loglevel: "warning" },
         inbounds: [{ port: localPort, listen: "127.0.0.1", protocol: "socks", settings: { udp: true } }],
         outbounds: outbounds,
-        routing: { rules: [{ type: "field", outboundTag: "proxy_main", port: "0-65535" }] }
+        // 核心修复：路由策略支持双栈
+        routing: { 
+            // IPIfNonMatch: 如果域名规则没匹配到，尝试解析IP，如果解析出v4用v4，有v6用v6
+            // 这允许双栈流量正常通行，解决了 ip.sb 只显示 v6 的问题
+            domainStrategy: "IPIfNonMatch", 
+            rules: [{ type: "field", outboundTag: "proxy_main", port: "0-65535" }] 
+        }
     };
 }
 

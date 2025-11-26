@@ -79,7 +79,9 @@ const i18n = {
         msgSubUpdated: "Updated:",
         msgImported: "Imported",
         msgNodes: "nodes.",
-        msgUpdateFailed: "Update Failed:"
+        msgUpdateFailed: "Update Failed:",
+		tagsLabel: "Tags (comma separated)",
+		timezoneLabel: "Timezone"
     },
     cn: {
         enablePreProxy: "开启前置代理",
@@ -161,7 +163,9 @@ const i18n = {
         msgSubUpdated: "订阅更新成功：",
         msgImported: "成功导入",
         msgNodes: "个节点。",
-        msgUpdateFailed: "更新失败："
+        msgUpdateFailed: "更新失败：",
+		tagsLabel: "标签 (逗号分隔)",
+		timezoneLabel: "时区"
     }
 };
 
@@ -208,7 +212,7 @@ function renderHelpContent() {
          <div style="margin-bottom:25px;"><h4 style="color:var(--accent);margin-bottom:8px;">3. 前置代理</h4><p style="font-size:14px;">可选功能。用于隐藏本机IP或链路加速。</p></div>`;
 
     const aboutHTML = curLang === 'en' ?
-        `<div style="text-align:center;margin-bottom:20px;"><div style="font-size:24px;font-weight:bold;color:var(--text-primary);">Geek<span style="color:var(--accent);">EZ</span></div><div style="font-size:12px;opacity:0.6;">v1.1.0</div></div>
+        `<div style="text-align:center;margin-bottom:20px;"><div style="font-size:24px;font-weight:bold;color:var(--text-primary);">Geek<span style="color:var(--accent);">EZ</span></div><div style="font-size:12px;opacity:0.6;">v1.2.0</div></div>
          <h4 style="border-bottom:1px solid var(--border);padding-bottom:5px;color:var(--text-primary);">Technology</h4><p style="font-size:13px;margin-bottom:20px;">Electron + Puppeteer. Native Code Spoofing & Noise Injection.</p>
          <h4 style="border-bottom:1px solid var(--border);padding-bottom:5px;color:var(--text-primary);">Platform Analysis</h4>
          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px;">
@@ -219,7 +223,7 @@ function renderHelpContent() {
             <div style="background:rgba(0,0,0,0.15);padding:10px;border-radius:6px;"><div style="color:#bf0000;font-weight:bold;">Rakuten</div><div style="font-size:11px;margin-top:5px;">Strict IP check.</div></div>
             <div style="background:rgba(0,0,0,0.15);padding:10px;border-radius:6px;"><div style="color:#f1c40f;font-weight:bold;">Mercado</div><div style="font-size:11px;margin-top:5px;">Safe. Similar to Amazon.</div></div>
          </div>` :
-        `<div style="text-align:center;margin-bottom:20px;"><div style="font-size:24px;font-weight:bold;color:var(--text-primary);">Geek<span style="color:var(--accent);">EZ</span></div><div style="font-size:12px;opacity:0.6;">v1.1.0</div></div>
+        `<div style="text-align:center;margin-bottom:20px;"><div style="font-size:24px;font-weight:bold;color:var(--text-primary);">Geek<span style="color:var(--accent);">EZ</span></div><div style="font-size:12px;opacity:0.6;">v1.2.0</div></div>
          <h4 style="border-bottom:1px solid var(--border);padding-bottom:5px;color:var(--text-primary);">技术内核</h4><p style="font-size:13px;margin-bottom:20px;">Native Code 伪装 + 多媒体噪音注入，有效对抗指纹。</p>
          <h4 style="border-bottom:1px solid var(--border);padding-bottom:5px;color:var(--text-primary);">平台适用性</h4>
          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px;">
@@ -303,9 +307,15 @@ async function init() {
         if (badge) status === 'running' ? badge.classList.add('active') : badge.classList.remove('active');
     });
     
+    // 核心修复：版本号注入
+    const info = await window.electronAPI.invoke('get-app-info');
+    const verSpan = document.getElementById('app-version');
+    if(verSpan) verSpan.innerText = `v${info.version}`;
+
     checkSubscriptionUpdates();
     applyLang();
 }
+
 
 async function checkSubscriptionUpdates() {
     const now = Date.now();
@@ -355,6 +365,14 @@ function toggleViewMode() {
     loadProfiles();
 }
 
+// 简单的颜色生成器
+function stringToColor(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+    return '#' + "00000".substring(0, 6 - c.length) + c;
+}
+
 async function loadProfiles() {
     try {
         const profiles = await window.electronAPI.getProfiles();
@@ -370,7 +388,13 @@ async function loadProfiles() {
         }
 
         listEl.innerHTML = '';
-        const filtered = profiles.filter(p => p.name.toLowerCase().includes(searchText) || p.proxyStr.toLowerCase().includes(searchText));
+        const filtered = profiles.filter(p => {
+            const text = searchText;
+            // 搜索逻辑增强：支持搜标签
+            return p.name.toLowerCase().includes(text) || 
+                   p.proxyStr.toLowerCase().includes(text) ||
+                   (p.tags && p.tags.some(t => t.toLowerCase().includes(text)));
+        });
 
         if (filtered.length === 0) {
             const isSearch = searchText.length > 0;
@@ -384,13 +408,24 @@ async function loadProfiles() {
             const screen = fp.screen || { width:0, height:0 };
             const override = p.preProxyOverride || 'default';
             const isRunning = runningIds.includes(p.id);
+            
+            // 渲染标签 HTML
+            let tagsHtml = '';
+            if (p.tags && p.tags.length > 0) {
+                tagsHtml = p.tags.map(tag => 
+                    `<span class="tag" style="background:${stringToColor(tag)}33; color:${stringToColor(tag)}; border:1px solid ${stringToColor(tag)}44;">${tag}</span>`
+                ).join('');
+            }
+
             const el = document.createElement('div');
             el.className = 'profile-item no-drag';
             el.innerHTML = `
                 <div class="profile-info">
                     <div style="display:flex; align-items:center;"><h4>${p.name}</h4><span id="status-${p.id}" class="running-badge ${isRunning ? 'active' : ''}">${t('runningStatus')}</span></div>
                     <div class="profile-meta">
-                        <span class="tag">${p.proxyStr.split('://')[0].toUpperCase() || 'N/A'}</span><span class="tag">${screen.width}x${screen.height}</span>
+                        ${tagsHtml} <!-- 插入标签 -->
+                        <span class="tag">${p.proxyStr.split('://')[0].toUpperCase() || 'N/A'}</span>
+                        <span class="tag">${screen.width}x${screen.height}</span>
                         <span class="tag" style="border:1px solid var(--accent);">
                             <select class="quick-switch-select no-drag" onchange="quickUpdatePreProxy('${p.id}', this.value)">
                                 <option value="default" ${override==='default'?'selected':''}>${t('qsDefault')}</option>
@@ -407,6 +442,7 @@ async function loadProfiles() {
     } catch (e) { console.error(e); }
 }
 
+
 async function quickUpdatePreProxy(id, val) {
     const profiles = await window.electronAPI.getProfiles();
     const p = profiles.find(x => x.id === id);
@@ -416,6 +452,7 @@ async function quickUpdatePreProxy(id, val) {
 function openAddModal() {
     document.getElementById('addName').value = '';
     document.getElementById('addProxy').value = '';
+    document.getElementById('addTags').value = ''; // Clear tags
     document.getElementById('addModal').style.display = 'flex';
 }
 function closeAddModal() { document.getElementById('addModal').style.display = 'none'; }
@@ -423,9 +460,16 @@ function closeAddModal() { document.getElementById('addModal').style.display = '
 async function saveNewProfile() {
     let name = document.getElementById('addName').value;
     const proxyStr = document.getElementById('addProxy').value.trim();
+    const tagsStr = document.getElementById('addTags').value;
+    const timezone = document.getElementById('addTimezone').value; // 获取时区
+
+    const tags = tagsStr.split(/[,，]/).map(s => s.trim()).filter(s => s);
+
     if (!name && proxyStr) { const autoName = getProxyRemark(proxyStr); if (autoName) name = autoName; }
     if(!name || !proxyStr) return showAlert(t('inputReq'));
-    await window.electronAPI.saveProfile({ name, proxyStr });
+    
+    // 传递 timezone
+    await window.electronAPI.saveProfile({ name, proxyStr, tags, timezone });
     closeAddModal(); await loadProfiles();
 }
 
@@ -448,6 +492,11 @@ async function openEditModal(id) {
     const fp = p.fingerprint || {};
     document.getElementById('editName').value = p.name;
     document.getElementById('editProxy').value = p.proxyStr;
+    document.getElementById('editTags').value = (p.tags || []).join(', ');
+    
+    // 回填时区，如果没有则默认 LA
+    document.getElementById('editTimezone').value = fp.timezone || 'America/Los_Angeles';
+
     const sel = document.getElementById('editPreProxyOverride');
     sel.options[0].text = t('optDefault'); sel.options[1].text = t('optOn'); sel.options[2].text = t('optOff');
     sel.value = p.preProxyOverride || 'default';
@@ -467,8 +516,14 @@ async function saveEditProfile() {
     if (p) {
         p.name = document.getElementById('editName').value;
         p.proxyStr = document.getElementById('editProxy').value;
+        const tagsStr = document.getElementById('editTags').value;
+        p.tags = tagsStr.split(/[,，]/).map(s => s.trim()).filter(s => s);
         p.preProxyOverride = document.getElementById('editPreProxyOverride').value;
+        
         if (!p.fingerprint) p.fingerprint = {};
+        // 保存时区
+        p.fingerprint.timezone = document.getElementById('editTimezone').value;
+        
         p.fingerprint.screen = { width: parseInt(document.getElementById('editResW').value), height: parseInt(document.getElementById('editResH').value) };
         p.fingerprint.window = p.fingerprint.screen;
         p.fingerprint.userAgent = document.getElementById('editUA').value;
